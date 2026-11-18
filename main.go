@@ -28,6 +28,7 @@ type ViewerApp struct {
 	baseImage     image.Image
 	rendered      *ui.Bitmap
 	mode          RenderMode
+	modeStr       string
 	opacity       float64
 	zoomScale     float64
 	colorSeed     uint32
@@ -85,6 +86,7 @@ func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
 					Label: "只显示轮廓",
 					Click: func(*mygo.MenuItem, *mygo.Window) {
 						app.mode = ModeOutline
+						app.modeStr = "只显示轮廓"
 						app.refreshRender()
 					},
 				},
@@ -92,6 +94,7 @@ func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
 					Label: "半透明填充",
 					Click: func(*mygo.MenuItem, *mygo.Window) {
 						app.mode = ModeFill
+						app.modeStr = "半透明填充"
 						app.refreshRender()
 					},
 				},
@@ -99,6 +102,7 @@ func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
 					Label: "填充加轮廓",
 					Click: func(*mygo.MenuItem, *mygo.Window) {
 						app.mode = ModeBoth
+						app.modeStr = "填充加轮廓"
 						app.refreshRender()
 					},
 				},
@@ -280,24 +284,47 @@ func (app *ViewerApp) handlePath(path string) {
 	}
 }
 
+func (app *ViewerApp) fitWindow() {
+	if app.instMap == nil || app.win == nil {
+		return
+	}
+	winW, winH := app.win.Size()
+	availW := float64(winW - 32)
+	availH := float64(winH - 130)
+	if availW <= 0 || availH <= 0 {
+		return
+	}
+	scaleX := availW / float64(app.instMap.Width)
+	scaleY := availH / float64(app.instMap.Height)
+	scale := scaleX
+	if scaleY < scale {
+		scale = scaleY
+	}
+	if scale > 1.0 {
+		scale = 1.0
+	}
+	app.zoomScale = scale
+	app.refreshRender()
+}
+
 func (app *ViewerApp) view(c *ui.Context) {
 	ui.Column(c).Fill().Children(func() {
-		// Control toolbar 1: Main operations
-		ui.Row(c).Padding(8, 12).Gap(8).AlignItems(ui.Center).Children(func() {
+		// Control toolbar 1: Main operations with responsive wrapping
+		ui.Row(c).Wrap().Padding(8, 12).Gap(8).AlignItems(ui.Center).Children(func() {
 			if ui.Button(c, "打开文件").Clicked() {
 				app.openFileDialog()
 			}
 
-			if ui.Button(c, "填充加轮廓").Clicked() {
-				app.mode = ModeBoth
-				app.refreshRender()
-			}
-			if ui.Button(c, "半透明填充").Clicked() {
-				app.mode = ModeFill
-				app.refreshRender()
-			}
-			if ui.Button(c, "只显示轮廓").Clicked() {
-				app.mode = ModeOutline
+			sel := ui.Select(c, &app.modeStr, []string{"填充加轮廓", "半透明填充", "只显示轮廓"}).Width(110)
+			if sel.Changed() {
+				switch app.modeStr {
+				case "半透明填充":
+					app.mode = ModeFill
+				case "只显示轮廓":
+					app.mode = ModeOutline
+				default:
+					app.mode = ModeBoth
+				}
 				app.refreshRender()
 			}
 
@@ -325,9 +352,11 @@ func (app *ViewerApp) view(c *ui.Context) {
 				app.refreshRender()
 			}
 
-			ui.Text(c, "透明度:").FontSize(12)
-			ui.Slider(c, &app.opacity, 0.1, 1.0).OnChange(func() {
-				app.refreshRender()
+			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "透明度:").FontSize(12).SingleLine()
+				ui.Slider(c, &app.opacity, 0.1, 1.0).Width(80).OnChange(func() {
+					app.refreshRender()
+				})
 			})
 
 			if ui.Button(c, "100%").Clicked() {
@@ -342,6 +371,9 @@ func (app *ViewerApp) view(c *ui.Context) {
 				app.zoomScale = 0.25
 				app.refreshRender()
 			}
+			if ui.Button(c, "适应窗口").Clicked() {
+				app.fitWindow()
+			}
 
 			if ui.Button(c, "检查更新").Clicked() {
 				updater.CheckForUpdates()
@@ -349,8 +381,8 @@ func (app *ViewerApp) view(c *ui.Context) {
 		})
 
 		// Control toolbar 2: Instance measurement & inspector card
-		ui.Row(c).Padding(6, 12).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "实例测量:").FontSize(12)
+		ui.Row(c).Wrap().Padding(6, 12).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "实例测量:").FontSize(12).SingleLine()
 			if ui.Button(c, "◀ 上一个").Clicked() {
 				app.selectPrevCell()
 			}
@@ -366,21 +398,23 @@ func (app *ViewerApp) view(c *ui.Context) {
 					bh := cm.MaxY - cm.MinY + 1
 					info := fmt.Sprintf("【实例 #%d】 面积: %d 像素 | 外接尺寸: %d×%d 像素 | 范围: [%d, %d] - [%d, %d] | 形心: (%.1f, %.1f)",
 						cm.ID, cm.Area, bw, bh, cm.MinX, cm.MinY, cm.MaxX, cm.MaxY, cm.CentroidX, cm.CentroidY)
-					ui.Text(c, info).FontSize(12)
+					ui.Text(c, info).FontSize(12).SingleLine()
 				}
 			} else {
-				ui.Text(c, "提示: 点击图像中任意细胞即可选中高亮并读取测量参数").FontSize(12)
+				ui.Text(c, "提示: 点击图像中任意细胞即可选中高亮并读取测量参数").FontSize(12).SingleLine()
 			}
 
 			if app.hoverText != "" {
-				ui.Text(c, "| "+app.hoverText).FontSize(12)
+				ui.Text(c, "| "+app.hoverText).FontSize(12).SingleLine()
 			}
-			ui.Text(c, "| "+app.statusText).Grow(1).FontSize(12).SingleLine()
+			if app.statusText != "" {
+				ui.Text(c, "| "+app.statusText).FontSize(12).SingleLine()
+			}
 		})
 
 		// Viewport area
-		ui.ScrollBoth(c).Grow(1).Children(func() {
-			if app.rendered != nil {
+		if app.rendered != nil {
+			ui.ScrollBoth(c).Grow(1).Children(func() {
 				imgElem := ui.Image(c, app.rendered).Cursor(ui.CursorCrosshair)
 				if px, py, over := imgElem.PointerPosition(); over && app.instMap != nil {
 					origX := int(float64(px) / app.zoomScale)
@@ -400,19 +434,20 @@ func (app *ViewerApp) view(c *ui.Context) {
 						}
 					}
 				}
-			} else {
-				ui.Column(c).Fill().AlignItems(ui.Center).Padding(60).Children(func() {
-					ui.Text(c, "可以直接拖拽 AIsoftware2 的 .tif 掩码文件到此窗口直接查看").FontSize(15)
-					ui.Text(c, "支持单页大图矩阵、多页局部包围盒裁剪掩码、自动关联配准 _source_BF 底图").FontSize(12)
-				})
-			}
-		})
+			})
+		} else {
+			ui.Column(c).Grow(1).Center().Gap(14).Children(func() {
+				ui.Text(c, "可以直接拖拽 AIsoftware2 的 .tif 掩码文件到此窗口直接查看").FontSize(18).Bold().TextAlign(ui.Center)
+				ui.Text(c, "支持单页大图矩阵、多页局部包围盒裁剪掩码、自动关联配准 _source_BF 底图").FontSize(13).TextAlign(ui.Center)
+			})
+		}
 	})
 }
 
 func main() {
 	app := &ViewerApp{
 		mode:        ModeBoth,
+		modeStr:     "填充加轮廓",
 		opacity:     0.5,
 		zoomScale:   1.0,
 		colorSeed:   0,

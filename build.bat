@@ -9,12 +9,30 @@ if %ERRORLEVEL% equ 0 (
     "C:\Users\Lenovo\go\bin\rsrc.exe" -ico icon.ico -o rsrc.syso
 )
 
-echo [2/2] Compiling CellMaskViewer with mygo native UI...
-go build -ldflags "-s -w -H windowsgui" -o "CellMaskViewer.exe" .
+echo [2/2] Compiling CellMaskViewer with mygo build (including auto-update signature)...
+if not defined MYGO_UPDATER_PRIVATE_KEY (
+    if exist "%APPDATA%\mygo\update-keys\mygo-update.key" (
+        set /p MYGO_UPDATER_PRIVATE_KEY=<"%APPDATA%\mygo\update-keys\mygo-update.key"
+    )
+)
+
+where mygo >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    mygo build -skip-installer
+) else if exist "C:\Users\Lenovo\go\bin\mygo.exe" (
+    "C:\Users\Lenovo\go\bin\mygo.exe" build -skip-installer
+) else (
+    go build -ldflags "-s -w -H windowsgui" -o "CellMaskViewer.exe" .
+)
+
+if exist "build\windows-amd64\CellMaskViewer.exe" (
+    copy /y "build\windows-amd64\CellMaskViewer.exe" "CellMaskViewer.exe" >nul
+)
+
 if %ERRORLEVEL% equ 0 (
     echo.
     echo ====================================================
-    echo [BUILD SUCCESS] CellMaskViewer.exe is ready with embedded icon.
+    echo [BUILD SUCCESS] CellMaskViewer.exe is ready with embedded icon and update signatures.
     echo ====================================================
 ) else (
     echo [BUILD FAILED] Code: %ERRORLEVEL%
