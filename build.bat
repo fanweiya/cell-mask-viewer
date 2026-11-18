@@ -19,4 +19,3 @@ if %ERRORLEVEL% equ 0 (
 ) else (
     echo [BUILD FAILED] Code: %ERRORLEVEL%
 )
-pause

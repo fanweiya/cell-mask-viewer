@@ -14,9 +14,20 @@ func TestReadSinglePageTIFF(t *testing.T) {
 		t.Fatalf("unexpected cell count: %d", m.TotalCells)
 	}
 
-	rgba := RenderInstances(m, ModeOutline, 0.5, nil)
+	opts := RenderOptions{
+		Mode:        ModeOutline,
+		Opacity:     0.5,
+		StrokeWidth: 1,
+		MaskVisible: true,
+	}
+	rgba := RenderInstances(m, opts, nil)
 	if rgba.Bounds().Dx() != 3200 || rgba.Bounds().Dy() != 2176 {
 		t.Fatalf("unexpected rendered bounds: %v", rgba.Bounds())
+	}
+
+	metrics := ComputeCellMetrics(m)
+	if len(metrics) != 1091 {
+		t.Fatalf("unexpected metrics count: %d", len(metrics))
 	}
 }
 
@@ -30,7 +41,14 @@ func TestReadMultiPageCropTIFF(t *testing.T) {
 		t.Fatalf("zero dimensions: %dx%d", m.Width, m.Height)
 	}
 
-	rgba := RenderInstances(m, ModeBoth, 0.5, nil)
+	opts := RenderOptions{
+		Mode:        ModeBoth,
+		Opacity:     0.5,
+		StrokeWidth: 2,
+		MaskVisible: true,
+		SelectedID:  1,
+	}
+	rgba := RenderInstances(m, opts, nil)
 	if rgba.Bounds().Dx() != m.Width || rgba.Bounds().Dy() != m.Height {
 		t.Fatalf("unexpected rendered bounds: %v", rgba.Bounds())
 	}
