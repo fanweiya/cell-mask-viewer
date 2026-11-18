@@ -1,0 +1,13 @@
+import { defineConfig } from "mygo-cli";
+
+export default defineConfig({
+  name: "CellMaskViewer",
+  identifier: "com.fanweiya.cellmaskviewer",
+  version: "0.1.0",
+  icon: "resources/icon.png",
+  updates: {
+    publicKey: "7VSdnRY8AraVMUPabVPTe2fIY1bjjRKhiQ62ifPNOQw=",
+    github: "fanweiya/cell-mask-viewer",
+  },
+  out: "build",
+});
