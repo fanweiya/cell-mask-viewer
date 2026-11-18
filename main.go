@@ -21,6 +21,7 @@ var appIconPNG []byte
 // ViewerApp controls the GUI state and rendering pipeline.
 type ViewerApp struct {
 	win        *mygo.Window
+	tray       *mygo.Tray
 	maskPath   string
 	instMap    *InstanceMap
 	baseImage  image.Image
@@ -29,6 +30,81 @@ type ViewerApp struct {
 	opacity    float64
 	zoomScale  float64
 	statusText string
+}
+
+func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
+	return mygo.NewMenu([]*mygo.MenuItem{
+		{
+			Label: "显示主窗口",
+			Click: func(*mygo.MenuItem, *mygo.Window) {
+				app.win.Show()
+				app.win.Focus()
+			},
+		},
+		{
+			Label: "隐藏主窗口",
+			Click: func(*mygo.MenuItem, *mygo.Window) {
+				app.win.Hide()
+			},
+		},
+		mygo.Separator(),
+		{
+			Label: "打开文件...",
+			Click: func(*mygo.MenuItem, *mygo.Window) {
+				app.win.Show()
+				app.win.Focus()
+				app.openFileDialog()
+			},
+		},
+		{
+			Label: "显示模式",
+			Submenu: []*mygo.MenuItem{
+				{
+					Label: "只显示轮廓",
+					Click: func(*mygo.MenuItem, *mygo.Window) {
+						app.mode = ModeOutline
+						app.refreshRender()
+					},
+				},
+				{
+					Label: "半透明填充",
+					Click: func(*mygo.MenuItem, *mygo.Window) {
+						app.mode = ModeFill
+						app.refreshRender()
+					},
+				},
+				{
+					Label: "填充加轮廓",
+					Click: func(*mygo.MenuItem, *mygo.Window) {
+						app.mode = ModeBoth
+						app.refreshRender()
+					},
+				},
+			},
+		},
+		mygo.Separator(),
+		updater.MenuItem(),
+		mygo.Separator(),
+		{
+			Label: "退出 CellMaskViewer",
+			Click: func(*mygo.MenuItem, *mygo.Window) {
+				mygo.App.Quit()
+			},
+		},
+	})
+}
+
+func (app *ViewerApp) setupTray() {
+	t, err := mygo.NewTray(mygo.TrayOptions{
+		ID:      "cellmaskviewer-tray",
+		Icon:    appIconPNG,
+		ToolTip: "CellMaskViewer · 实例掩码查看器",
+		Menu:    app.buildTrayMenu(),
+	})
+	if err != nil {
+		panic(err)
+	}
+	app.tray = t
 }
 
 func (app *ViewerApp) refreshRender() {
@@ -212,6 +288,13 @@ func main() {
 		})
 		_ = app.win.SetIcon(appIconPNG)
 
+		app.setupTray()
+
+		app.win.OnClose(func(e *mygo.CloseEvent) {
+			e.PreventDefault()
+			app.win.Hide()
+		})
+
 		// Register drag and drop callback
 		app.win.OnFileDrop(func(e *mygo.FileDropEvent) {
 			if len(e.Paths) > 0 {
@@ -223,6 +306,8 @@ func main() {
 			app.loadMask(app.maskPath)
 		}
 	})
+
+	mygo.App.OnWindowAllClosed(func() {})
 
 	if err := mygo.App.Run(); err != nil {
 		panic(err)
