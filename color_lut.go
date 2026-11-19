@@ -3,6 +3,7 @@ package main
 import (
 	"image"
 	"image/color"
+	"image/draw"
 	"math"
 )
 
@@ -139,74 +140,115 @@ func RenderInstances(m *InstanceMap, opts RenderOptions, baseImg image.Image) *i
 	h := m.Height
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 
+	// Fast pre-conversion of base image if present
+	var baseRGBA *image.RGBA
+	if baseImg != nil {
+		if r, ok := baseImg.(*image.RGBA); ok && r.Rect.Dx() == w && r.Rect.Dy() == h {
+			baseRGBA = r
+		} else {
+			baseRGBA = image.NewRGBA(image.Rect(0, 0, w, h))
+			draw.Draw(baseRGBA, baseRGBA.Bounds(), baseImg, baseImg.Bounds().Min, draw.Src)
+		}
+	}
+
 	if !opts.MaskVisible {
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				if baseImg != nil {
-					pr, pg, pb, pa := baseImg.At(x, y).RGBA()
-					rgba.SetRGBA(x, y, color.RGBA{
-						R: uint8(pr >> 8),
-						G: uint8(pg >> 8),
-						B: uint8(pb >> 8),
-						A: uint8(pa >> 8),
-					})
-				} else {
-					rgba.SetRGBA(x, y, color.RGBA{R: 20, G: 20, B: 24, A: 255})
-				}
+		if baseRGBA != nil {
+			copy(rgba.Pix, baseRGBA.Pix)
+		} else {
+			for i := 0; i < len(rgba.Pix); i += 4 {
+				rgba.Pix[i] = 20
+				rgba.Pix[i+1] = 20
+				rgba.Pix[i+2] = 24
+				rgba.Pix[i+3] = 255
 			}
 		}
 		return rgba
 	}
 
+	// Precompute Color Table once to avoid per-pixel float/HSV calculations
+	maxID := uint32(m.TotalCells)
+	for _, id := range m.Labels {
+		if id > maxID {
+			maxID = id
+		}
+	}
+	colorTable := make([]color.RGBA, maxID+1)
+	for i := uint32(1); i <= maxID; i++ {
+		colorTable[i] = GoldenRatioColor(i, opts.Seed)
+	}
+
 	fillAlpha := uint8(math.Round(opts.Opacity * 255))
+	halfFillAlpha := uint8(float64(fillAlpha) * 0.5)
 	strokeWidth := opts.StrokeWidth
 	if strokeWidth <= 0 {
 		strokeWidth = 1
 	}
 
+	labels := m.Labels
+	outPix := rgba.Pix
+	var basePix []byte
+	baseStride := 0
+	if baseRGBA != nil {
+		basePix = baseRGBA.Pix
+		baseStride = baseRGBA.Stride
+	}
+	outStride := rgba.Stride
+
 	for y := 0; y < h; y++ {
 		rowOffset := y * w
+		pRow := y * outStride
+		bRow := y * baseStride
+
 		for x := 0; x < w; x++ {
 			idx := rowOffset + x
-			id := m.Labels[idx]
-
-			var br, bg, bb, ba uint8
-			if baseImg != nil {
-				pr, pg, pb, pa := baseImg.At(x, y).RGBA()
-				br = uint8(pr >> 8)
-				bg = uint8(pg >> 8)
-				bb = uint8(pb >> 8)
-				ba = uint8(pa >> 8)
-			}
+			id := labels[idx]
+			p := pRow + x*4
 
 			if id == 0 {
-				if baseImg != nil {
-					rgba.SetRGBA(x, y, color.RGBA{R: br, G: bg, B: bb, A: ba})
+				if basePix != nil {
+					bp := bRow + x*4
+					outPix[p] = basePix[bp]
+					outPix[p+1] = basePix[bp+1]
+					outPix[p+2] = basePix[bp+2]
+					outPix[p+3] = basePix[bp+3]
+				} else {
+					outPix[p] = 20
+					outPix[p+1] = 20
+					outPix[p+2] = 24
+					outPix[p+3] = 255
 				}
 				continue
 			}
 
+			var br, bg, bb uint8
+			if basePix != nil {
+				bp := bRow + x*4
+				br = basePix[bp]
+				bg = basePix[bp+1]
+				bb = basePix[bp+2]
+			}
+
 			isSelected := (opts.SelectedID > 0 && id == opts.SelectedID)
-			col := GoldenRatioColor(id, opts.Seed)
+			col := colorTable[id]
 
 			isEdge := false
 			if opts.Mode == ModeOutline || opts.Mode == ModeBoth || isSelected {
 				if strokeWidth <= 1 {
 					if x == 0 || x == w-1 || y == 0 || y == h-1 {
 						isEdge = true
-					} else if m.Labels[idx-1] != id || m.Labels[idx+1] != id ||
-						m.Labels[idx-w] != id || m.Labels[idx+w] != id {
+					} else if labels[idx-1] != id || labels[idx+1] != id ||
+						labels[idx-w] != id || labels[idx+w] != id {
 						isEdge = true
 					}
 				} else {
 					if x < 2 || x >= w-2 || y < 2 || y >= h-2 {
 						isEdge = true
-					} else if m.Labels[idx-1] != id || m.Labels[idx+1] != id ||
-						m.Labels[idx-w] != id || m.Labels[idx+w] != id ||
-						m.Labels[idx-2] != id || m.Labels[idx+2] != id ||
-						m.Labels[idx-2*w] != id || m.Labels[idx+2*w] != id ||
-						m.Labels[idx-w-1] != id || m.Labels[idx-w+1] != id ||
-						m.Labels[idx+w-1] != id || m.Labels[idx+w+1] != id {
+					} else if labels[idx-1] != id || labels[idx+1] != id ||
+						labels[idx-w] != id || labels[idx+w] != id ||
+						labels[idx-2] != id || labels[idx+2] != id ||
+						labels[idx-2*w] != id || labels[idx+2*w] != id ||
+						labels[idx-w-1] != id || labels[idx-w+1] != id ||
+						labels[idx+w-1] != id || labels[idx+w+1] != id {
 						isEdge = true
 					}
 				}
@@ -225,24 +267,27 @@ func RenderInstances(m *InstanceMap, opts RenderOptions, baseImg image.Image) *i
 				if isEdge {
 					fr, fg, fb, fa = col.R, col.G, col.B, 255
 				} else if opts.Mode == ModeOutline {
-					fr, fg, fb, fa = br, bg, bb, ba
+					fr, fg, fb, fa = br, bg, bb, 255
 				} else if opts.Mode == ModeBoth {
-					fr, fg, fb, fa = col.R, col.G, col.B, uint8(float64(fillAlpha) * 0.5)
+					fr, fg, fb, fa = col.R, col.G, col.B, halfFillAlpha
 				} else {
 					fr, fg, fb, fa = col.R, col.G, col.B, fillAlpha
 				}
 			}
 
-			if baseImg != nil && fa < 255 {
-				alphaF := float64(fa) / 255.0
-				invAlphaF := 1.0 - alphaF
-				fr = uint8(float64(fr)*alphaF + float64(br)*invAlphaF)
-				fg = uint8(float64(fg)*alphaF + float64(bg)*invAlphaF)
-				fb = uint8(float64(fb)*alphaF + float64(bb)*invAlphaF)
+			if basePix != nil && fa < 255 {
+				alpha := int(fa)
+				invAlpha := 255 - alpha
+				fr = uint8((int(fr)*alpha + int(br)*invAlpha) / 255)
+				fg = uint8((int(fg)*alpha + int(bg)*invAlpha) / 255)
+				fb = uint8((int(fb)*alpha + int(bb)*invAlpha) / 255)
 				fa = 255
 			}
 
-			rgba.SetRGBA(x, y, color.RGBA{R: fr, G: fg, B: fb, A: fa})
+			outPix[p] = fr
+			outPix[p+1] = fg
+			outPix[p+2] = fb
+			outPix[p+3] = fa
 		}
 	}
 	return rgba

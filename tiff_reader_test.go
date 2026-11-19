@@ -89,3 +89,35 @@ func TestReadCorruptOrNonTIFFReturnsError(t *testing.T) {
 		t.Fatal("expected nil instance map for corrupt file")
 	}
 }
+
+func BenchmarkRenderInstances_Synthetic4096(b *testing.B) {
+	w, h := 4096, 4096
+	labels := make([]uint32, w*h)
+	// Simulate ~30,000 cells
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			cellIdx := (y/24)*170 + (x / 24)
+			if cellIdx%3 != 0 {
+				labels[y*w+x] = uint32(cellIdx + 1)
+			}
+		}
+	}
+	m := &InstanceMap{
+		Width:      w,
+		Height:     h,
+		TotalCells: 30000,
+		Labels:     labels,
+	}
+	opts := RenderOptions{
+		Mode:        ModeBoth,
+		Opacity:     0.5,
+		StrokeWidth: 1,
+		MaskVisible: true,
+		Seed:        42,
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = RenderInstances(m, opts, nil)
+	}
+}

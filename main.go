@@ -826,9 +826,9 @@ func main() {
 		app.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:     "AIsoftware2 TIFF 实例掩码查看器",
 			Width:     1280,
-			Height:    900,
+			Height:    860,
 			MinWidth:  800,
-			MinHeight: 600,
+			MinHeight: 560,
 			Content:   ui.View(app.view),
 		})
 		_ = app.win.SetIcon(appIconPNG)
