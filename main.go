@@ -6,7 +6,7 @@ import (
 	"image"
 	"image/color"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"math"
 	"os"
 	"path/filepath"
@@ -30,6 +30,7 @@ type ViewerApp struct {
 	maskPath          string
 	instMap           *InstanceMap
 	baseImage         image.Image
+	renderedRGBA      *image.RGBA
 	rendered          *ui.Bitmap
 	placeholderBitmap *ui.Bitmap
 	canvasScroll      ui.ScrollState
@@ -209,6 +210,7 @@ func (app *ViewerApp) refreshRender() {
 		SelectedID:  app.selectedID,
 	}
 	rgba := RenderInstances(app.instMap, opts, app.baseImage)
+	app.renderedRGBA = rgba
 
 	if app.zoomScale < 0.99 || app.zoomScale > 1.01 {
 		sw := int(float64(rgba.Bounds().Dx()) * app.zoomScale)
@@ -232,8 +234,16 @@ func (app *ViewerApp) refreshRender() {
 }
 
 func (app *ViewerApp) loadMask(path string) {
+	instMap, err := ReadTIFFMask(path)
+	if err != nil {
+		app.statusText = fmt.Sprintf("打开失败: %s (%v)", filepath.Base(path), err)
+		if app.win != nil {
+			app.win.Invalidate()
+		}
+		return
+	}
 	app.maskPath = path
-	app.instMap = ReadTIFFMask(app.maskPath)
+	app.instMap = instMap
 	app.cellMetrics = ComputeCellMetrics(app.instMap)
 	app.sortedCellIDs = make([]uint32, 0, len(app.cellMetrics))
 	for id := range app.cellMetrics {
@@ -427,12 +437,67 @@ func (app *ViewerApp) openFileDialog() {
 		},
 	})
 	if err != nil {
-		panic(err)
+		app.statusText = fmt.Sprintf("打开文件对话框失败: %v", err)
+		if app.win != nil {
+			app.win.Invalidate()
+		}
+		return
 	}
 	if len(paths) == 0 {
 		return
 	}
 	app.handlePath(paths[0])
+}
+
+func (app *ViewerApp) exportPNG() {
+	if app.renderedRGBA == nil {
+		app.statusText = "当前无渲染结果可导出"
+		if app.win != nil {
+			app.win.Invalidate()
+		}
+		return
+	}
+	defaultName := "mask_rendered.png"
+	defaultDir := ""
+	if app.maskPath != "" {
+		base := strings.TrimSuffix(filepath.Base(app.maskPath), filepath.Ext(app.maskPath))
+		defaultName = base + "_rendered.png"
+		defaultDir = filepath.Dir(app.maskPath)
+	}
+	defaultPath := filepath.Join(defaultDir, defaultName)
+
+	savePath, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
+		Title:       "导出渲染图为 PNG",
+		DefaultPath: defaultPath,
+		Filters: []mygo.FileFilter{
+			{Name: "PNG Image", Extensions: []string{"png"}},
+		},
+	})
+	if err != nil || savePath == "" {
+		return
+	}
+	if !strings.HasSuffix(strings.ToLower(savePath), ".png") {
+		savePath += ".png"
+	}
+
+	outFile, err := os.Create(savePath)
+	if err != nil {
+		app.statusText = fmt.Sprintf("创建导出文件失败: %v", err)
+		if app.win != nil {
+			app.win.Invalidate()
+		}
+		return
+	}
+	defer outFile.Close()
+
+	if err := png.Encode(outFile, app.renderedRGBA); err != nil {
+		app.statusText = fmt.Sprintf("保存 PNG 失败: %v", err)
+	} else {
+		app.statusText = fmt.Sprintf("已成功导出图像: %s", filepath.Base(savePath))
+	}
+	if app.win != nil {
+		app.win.Invalidate()
+	}
 }
 
 func (app *ViewerApp) handlePath(path string) {
@@ -442,15 +507,28 @@ func (app *ViewerApp) handlePath(path string) {
 	} else if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
 		f, err := os.Open(path)
 		if err != nil {
-			panic(err)
+			app.statusText = fmt.Sprintf("打开底图失败: %v", err)
+			if app.win != nil {
+				app.win.Invalidate()
+			}
+			return
 		}
 		img, _, err := image.Decode(f)
 		f.Close()
 		if err != nil {
-			panic(err)
+			app.statusText = fmt.Sprintf("解码底图失败: %v", err)
+			if app.win != nil {
+				app.win.Invalidate()
+			}
+			return
 		}
 		app.baseImage = img
 		app.refreshRender()
+	} else {
+		app.statusText = fmt.Sprintf("不支持的文件格式: %s", filepath.Base(path))
+		if app.win != nil {
+			app.win.Invalidate()
+		}
 	}
 }
 
@@ -483,6 +561,9 @@ func (app *ViewerApp) view(c *ui.Context) {
 		ui.Row(c).Wrap().Padding(8, 12).Gap(8).AlignItems(ui.Center).Children(func() {
 			if ui.Button(c, "打开文件").Clicked() {
 				app.openFileDialog()
+			}
+			if ui.Button(c, "导出 PNG...").Clicked() {
+				app.exportPNG()
 			}
 
 			sel := ui.Select(c, &app.modeStr, []string{"填充加轮廓", "半透明填充", "只显示轮廓"}).Width(110)

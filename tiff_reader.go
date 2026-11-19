@@ -29,21 +29,21 @@ type tiffMetadata struct {
 }
 
 // ReadTIFFMask parses the given TIFF file using github.com/google/tiff and zlib decompression.
-func ReadTIFFMask(filePath string) *InstanceMap {
+func ReadTIFFMask(filePath string) (*InstanceMap, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("open file failed: %w", err)
 	}
 	defer f.Close()
 
 	parsed, err := tiff.Parse(f, nil, nil)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("parse tiff failed: %w", err)
 	}
 
 	ifds := parsed.IFDs()
 	if len(ifds) == 0 {
-		panic(fmt.Errorf("tiff: no IFD found in %s", filePath))
+		return nil, fmt.Errorf("tiff: no IFD found in %s", filePath)
 	}
 
 	firstIFD := ifds[0]
@@ -107,7 +107,7 @@ func getFieldUintArray(ifd tiff.IFD, tagID uint16) []uint32 {
 	return result
 }
 
-func readStrips(r io.ReaderAt, ifd tiff.IFD) []byte {
+func readStrips(r io.ReaderAt, ifd tiff.IFD) ([]byte, error) {
 	offsets := getFieldUintArray(ifd, 273)    // StripOffsets
 	byteCounts := getFieldUintArray(ifd, 279) // StripByteCounts
 	compression := getFieldUint(ifd, 259)    // Compression
@@ -117,33 +117,50 @@ func readStrips(r io.ReaderAt, ifd tiff.IFD) []byte {
 		stripBuf := make([]byte, byteCounts[i])
 		_, err := r.ReadAt(stripBuf, int64(offsets[i]))
 		if err != nil {
-			panic(err)
+			return nil, fmt.Errorf("read strip offset %d failed: %w", offsets[i], err)
 		}
 
 		if compression == 8 || compression == 32946 { // Adobe Deflate / zlib
 			zr, err := zlib.NewReader(bytes.NewReader(stripBuf))
 			if err != nil {
-				panic(err)
+				return nil, fmt.Errorf("zlib reader init failed: %w", err)
 			}
 			_, err = io.Copy(&output, zr)
 			zr.Close()
 			if err != nil {
-				panic(err)
+				return nil, fmt.Errorf("zlib decompress failed: %w", err)
 			}
 		} else {
 			output.Write(stripBuf)
 		}
 	}
-	return output.Bytes()
+	return output.Bytes(), nil
 }
 
-func decodeSinglePage(r io.ReaderAt, ifd tiff.IFD, meta tiffMetadata) *InstanceMap {
+func decodeSinglePage(r io.ReaderAt, ifd tiff.IFD, meta tiffMetadata) (*InstanceMap, error) {
 	width := int(getFieldUint(ifd, 256))
 	height := int(getFieldUint(ifd, 257))
 	bits := int(getFieldUint(ifd, 258))
-	order := ifd.GetField(256).Value().Order()
+	f256 := ifd.GetField(256)
+	if f256 == nil || f256.Value() == nil {
+		return nil, fmt.Errorf("missing width field (256)")
+	}
+	order := f256.Value().Order()
 
-	raw := readStrips(r, ifd)
+	raw, err := readStrips(r, ifd)
+	if err != nil {
+		return nil, err
+	}
+	expectedLen := width * height
+	if bits == 16 {
+		expectedLen *= 2
+	} else if bits == 32 {
+		expectedLen *= 4
+	}
+	if len(raw) < expectedLen {
+		return nil, fmt.Errorf("strip data size %d smaller than expected %d", len(raw), expectedLen)
+	}
+
 	labels := make([]uint32, width*height)
 
 	if bits == 16 {
@@ -165,10 +182,10 @@ func decodeSinglePage(r io.ReaderAt, ifd tiff.IFD, meta tiffMetadata) *InstanceM
 		Height:     height,
 		TotalCells: meta.TotalCells,
 		Labels:     labels,
-	}
+	}, nil
 }
 
-func decodeMultiPageCrop(r io.ReaderAt, ifds []tiff.IFD) *InstanceMap {
+func decodeMultiPageCrop(r io.ReaderAt, ifds []tiff.IFD) (*InstanceMap, error) {
 	type cropInfo struct {
 		cellNumber int
 		tx, ty     int
@@ -183,8 +200,14 @@ func decodeMultiPageCrop(r io.ReaderAt, ifds []tiff.IFD) *InstanceMap {
 		meta := extractMeta(ifd)
 		bw := int(getFieldUint(ifd, 256))
 		bh := int(getFieldUint(ifd, 257))
-		raw := readStrips(r, ifd)
+		raw, err := readStrips(r, ifd)
+		if err != nil {
+			return nil, err
+		}
 
+		if len(meta.Boxs) < 4 {
+			continue
+		}
 		tx, ty := meta.Boxs[0], meta.Boxs[1]
 		bx, by := meta.Boxs[2], meta.Boxs[3]
 		if bx > maxX {
@@ -204,11 +227,16 @@ func decodeMultiPageCrop(r io.ReaderAt, ifds []tiff.IFD) *InstanceMap {
 		})
 	}
 
+	if maxX <= 0 || maxY <= 0 {
+		return nil, fmt.Errorf("invalid crop bounding box: %dx%d", maxX, maxY)
+	}
+
 	labels := make([]uint32, maxX*maxY)
 	for _, c := range crops {
 		for row := 0; row < c.bh; row++ {
 			for col := 0; col < c.bw; col++ {
-				if c.mask[row*c.bw+col] > 0 {
+				idx := row*c.bw + col
+				if idx < len(c.mask) && c.mask[idx] > 0 {
 					gy := c.ty + row
 					gx := c.tx + col
 					if gy < maxY && gx < maxX {
@@ -224,5 +252,5 @@ func decodeMultiPageCrop(r io.ReaderAt, ifds []tiff.IFD) *InstanceMap {
 		Height:     maxY,
 		TotalCells: len(crops),
 		Labels:     labels,
-	}
+	}, nil
 }
