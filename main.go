@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -23,11 +24,23 @@ var appIconPNG []byte
 
 const appVersion = "0.1.4"
 
+// ViewerConfigData stores user preferences across runs
+type ViewerConfigData struct {
+	LastDir     string  `json:"last_dir"`
+	ModeStr     string  `json:"mode_str"`
+	Opacity     float64 `json:"opacity"`
+	StrokeWidth int     `json:"stroke_width"`
+	MaskVisible bool    `json:"mask_visible"`
+	ColorSeed   uint32  `json:"color_seed"`
+}
+
 // ViewerApp controls the GUI state and rendering pipeline.
 type ViewerApp struct {
 	win               *mygo.Window
 	tray              *mygo.Tray
 	maskPath          string
+	lastDir           string
+	seedHistory       []uint32
 	instMap           *InstanceMap
 	baseImage         image.Image
 	renderedRGBA      *image.RGBA
@@ -431,7 +444,8 @@ func generateCellPlaceholderBitmap() *ui.Bitmap {
 
 func (app *ViewerApp) openFileDialog() {
 	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
-		Title: "选择掩码 TIFF 文件或底图",
+		Title:       "选择掩码 TIFF 文件或底图",
+		DefaultPath: app.lastDir,
 		Filters: []mygo.FileFilter{
 			{Name: "Supported Images", Extensions: []string{"tif", "tiff", "jpg", "jpeg", "png"}},
 		},
@@ -458,7 +472,7 @@ func (app *ViewerApp) exportPNG() {
 		return
 	}
 	defaultName := "mask_rendered.png"
-	defaultDir := ""
+	defaultDir := app.lastDir
 	if app.maskPath != "" {
 		base := strings.TrimSuffix(filepath.Base(app.maskPath), filepath.Ext(app.maskPath))
 		defaultName = base + "_rendered.png"
@@ -500,7 +514,68 @@ func (app *ViewerApp) exportPNG() {
 	}
 }
 
+func getAppConfigPath() string {
+	appData := os.Getenv("APPDATA")
+	if appData != "" {
+		d := filepath.Join(appData, "CellMaskViewer")
+		_ = os.MkdirAll(d, 0755)
+		return filepath.Join(d, "config.json")
+	}
+	return "config.json"
+}
+
+func (app *ViewerApp) saveConfig() {
+	data := ViewerConfigData{
+		LastDir:     app.lastDir,
+		ModeStr:     app.modeStr,
+		Opacity:     app.opacity,
+		StrokeWidth: app.strokeWidth,
+		MaskVisible: app.maskVisible,
+		ColorSeed:   app.colorSeed,
+	}
+	bytes, err := json.MarshalIndent(data, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(getAppConfigPath(), bytes, 0644)
+	}
+}
+
+func (app *ViewerApp) loadConfig() {
+	bytes, err := os.ReadFile(getAppConfigPath())
+	if err != nil {
+		return
+	}
+	var data ViewerConfigData
+	if err := json.Unmarshal(bytes, &data); err != nil {
+		return
+	}
+	if data.LastDir != "" {
+		app.lastDir = data.LastDir
+	}
+	if data.ModeStr != "" {
+		app.modeStr = data.ModeStr
+		switch app.modeStr {
+		case "半透明填充":
+			app.mode = ModeFill
+		case "只显示轮廓":
+			app.mode = ModeOutline
+		default:
+			app.mode = ModeBoth
+		}
+	}
+	if data.Opacity > 0 {
+		app.opacity = data.Opacity
+	}
+	if data.StrokeWidth > 0 {
+		app.strokeWidth = data.StrokeWidth
+	}
+	app.maskVisible = data.MaskVisible
+	if data.ColorSeed > 0 {
+		app.colorSeed = data.ColorSeed
+	}
+}
+
 func (app *ViewerApp) handlePath(path string) {
+	app.lastDir = filepath.Dir(path)
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == ".tif" || ext == ".tiff" {
 		app.loadMask(path)
@@ -571,7 +646,15 @@ func (app *ViewerApp) view(c *ui.Context) {
 			app.maskVisible = !app.maskVisible
 			app.refreshRender()
 		}
+		if c.Shortcut(ui.Ctrl, ui.KeyZ) {
+			if len(app.seedHistory) > 0 {
+				app.colorSeed = app.seedHistory[len(app.seedHistory)-1]
+				app.seedHistory = app.seedHistory[:len(app.seedHistory)-1]
+				app.refreshRender()
+			}
+		}
 		if c.Shortcut(0, ui.KeyR) && !c.ShortcutRepeated() {
+			app.seedHistory = append(app.seedHistory, app.colorSeed)
 			app.colorSeed++
 			app.refreshRender()
 		}
@@ -641,7 +724,8 @@ func (app *ViewerApp) view(c *ui.Context) {
 			}
 
 			// P2: Auxiliaries & Styling (automatically placed in overflow menu when narrow)
-			if ui.Button(c, "打乱配色").Tooltip("随机重新着色 (R)").Clicked() {
+			if ui.Button(c, "打乱配色").Tooltip("随机重新着色 (R，支持 Ctrl+Z 撤销)").Clicked() {
+				app.seedHistory = append(app.seedHistory, app.colorSeed)
 				app.colorSeed++
 				app.refreshRender()
 			}
@@ -832,6 +916,7 @@ func main() {
 		hoverText:   "",
 	}
 	app.placeholderBitmap = generateCellPlaceholderBitmap()
+	app.loadConfig()
 
 	// Handle initial command line argument if supplied
 	if len(os.Args) > 1 {
@@ -845,8 +930,22 @@ func main() {
 	}))
 
 	mygo.App.SetName("CellMaskViewer")
+	if !mygo.App.RequestSingleInstanceLock() {
+		return
+	}
+	mygo.App.OnSecondInstance(func(args []string, workingDir string) {
+		if app.win != nil {
+			app.win.Show()
+			app.win.Focus()
+			if len(args) > 0 {
+				app.handlePath(args[0])
+			}
+		}
+	})
+
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
 		app.quitting = true
+		app.saveConfig()
 	})
 	mygo.App.WhenReady(func() {
 		initW := 1280
@@ -880,10 +979,18 @@ func main() {
 
 		app.setupTray()
 
+		hasNotifiedTray := false
 		app.win.OnClose(func(e *mygo.CloseEvent) {
 			if !app.quitting {
 				e.PreventDefault()
 				app.win.Hide()
+				if !hasNotifiedTray {
+					hasNotifiedTray = true
+					_ = mygo.NewNotification(mygo.NotificationOptions{
+						Title: "CellMaskViewer 已转入后台",
+						Body:  "程序已最小化至系统托盘继续运行。如需彻底退出，请右键托盘图标选择退出。",
+					}).Show()
+				}
 			}
 		})
 
