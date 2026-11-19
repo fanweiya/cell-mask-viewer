@@ -21,6 +21,8 @@ import (
 //go:embed icon.png
 var appIconPNG []byte
 
+const appVersion = "0.1.3"
+
 // ViewerApp controls the GUI state and rendering pipeline.
 type ViewerApp struct {
 	win               *mygo.Window
@@ -48,6 +50,11 @@ type ViewerApp struct {
 
 func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
 	return mygo.NewMenu([]*mygo.MenuItem{
+		{
+			Label:    "CellMaskViewer v" + appVersion,
+			Disabled: true,
+		},
+		mygo.Separator(),
 		{
 			Label: "显示主窗口",
 			Click: func(*mygo.MenuItem, *mygo.Window) {
@@ -138,7 +145,7 @@ func (app *ViewerApp) setupTray() {
 	t, err := mygo.NewTray(mygo.TrayOptions{
 		ID:      "cellmaskviewer-tray",
 		Icon:    appIconPNG,
-		ToolTip: "CellMaskViewer · 实例掩码查看器",
+		ToolTip: "CellMaskViewer v" + appVersion + " · 实例掩码查看器",
 		Menu:    app.buildTrayMenu(),
 	})
 	if err != nil {
@@ -738,7 +745,7 @@ func main() {
 	})
 	mygo.App.WhenReady(func() {
 		app.win = mygo.NewWindow(mygo.WindowOptions{
-			Title:     "AIsoftware2 TIFF 实例掩码查看器",
+			Title:     "AIsoftware2 TIFF 实例掩码查看器 v" + appVersion,
 			Width:     1280,
 			Height:    900,
 			MinWidth:  800,
