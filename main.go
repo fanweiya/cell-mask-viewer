@@ -4,8 +4,10 @@ import (
 	_ "embed"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,25 +23,27 @@ var appIconPNG []byte
 
 // ViewerApp controls the GUI state and rendering pipeline.
 type ViewerApp struct {
-	win           *mygo.Window
-	tray          *mygo.Tray
-	maskPath      string
-	instMap       *InstanceMap
-	baseImage     image.Image
-	rendered      *ui.Bitmap
-	mode          RenderMode
-	modeStr       string
-	opacity       float64
-	zoomScale     float64
-	colorSeed     uint32
-	strokeWidth   int
-	maskVisible   bool
-	selectedID    uint32
-	cellMetrics   map[uint32]*CellMetrics
-	sortedCellIDs []uint32
-	statusText    string
-	hoverText     string
-	quitting      bool
+	win               *mygo.Window
+	tray              *mygo.Tray
+	maskPath          string
+	instMap           *InstanceMap
+	baseImage         image.Image
+	rendered          *ui.Bitmap
+	placeholderBitmap *ui.Bitmap
+	canvasScroll      ui.ScrollState
+	mode              RenderMode
+	modeStr           string
+	opacity           float64
+	zoomScale         float64
+	colorSeed         uint32
+	strokeWidth       int
+	maskVisible       bool
+	selectedID        uint32
+	cellMetrics       map[uint32]*CellMetrics
+	sortedCellIDs     []uint32
+	statusText        string
+	hoverText         string
+	quitting          bool
 }
 
 func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
@@ -257,6 +261,173 @@ func (app *ViewerApp) loadMask(path string) {
 	}
 
 	app.refreshRender()
+	if app.win != nil {
+		app.fitWindow()
+	}
+}
+
+func (app *ViewerApp) zoomIn() {
+	app.zoomScale *= 1.25
+	if app.zoomScale > 8.0 {
+		app.zoomScale = 8.0
+	}
+	app.refreshRender()
+}
+
+func (app *ViewerApp) zoomOut() {
+	app.zoomScale /= 1.25
+	if app.zoomScale < 0.05 {
+		app.zoomScale = 0.05
+	}
+	app.refreshRender()
+}
+
+func (app *ViewerApp) loadSampleData() {
+	sampleCandidates := []string{
+		`C:\算法\AIsoftware2\tests_images\cellsegments\result\test_23700\B2_13_source_BF_mask_multimasks.tif`,
+		`C:\算法\AIsoftware2\tests_images\cellsegments\result\test_config_vit_b.yaml.tif`,
+		`C:\算法\AIsoftware2\tests_images\blue_foci\result\A1_13_output_BF_multimasks.tif`,
+	}
+	for _, s := range sampleCandidates {
+		if _, err := os.Stat(s); err == nil {
+			app.handlePath(s)
+			return
+		}
+	}
+	app.statusText = "未在本地找到默认测试样本，请点击'打开文件'选择本地 .tif 文件"
+	if app.win != nil {
+		app.win.Invalidate()
+	}
+}
+
+func generateCellPlaceholderBitmap() *ui.Bitmap {
+	w, h := 280, 180
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+
+	bg := color.RGBA{R: 246, G: 249, B: 253, A: 255}
+	cardBorder := color.RGBA{R: 215, G: 228, B: 242, A: 255}
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if x == 0 || x == w-1 || y == 0 || y == h-1 {
+				rgba.Set(x, y, cardBorder)
+			} else {
+				rgba.Set(x, y, bg)
+			}
+		}
+	}
+
+	// Draw subtle microscope circular field grid (dashed circle)
+	cx, cy := w/2, h/2-6
+	r := 68
+	dishBorder := color.RGBA{R: 200, G: 215, B: 235, A: 255}
+	for deg := 0; deg < 360; deg += 3 {
+		if (deg/12)%2 == 0 {
+			rad := float64(deg) * math.Pi / 180.0
+			px := cx + int(float64(r)*math.Cos(rad))
+			py := cy + int(float64(r)*math.Sin(rad))
+			if px >= 0 && px < w && py >= 0 && py < h {
+				rgba.Set(px, py, dishBorder)
+			}
+		}
+	}
+
+	// Helper to draw an ellipse cell with nucleus
+	drawCell := func(ox, oy, rx, ry int, angle float64, fill, border, nucleus color.RGBA) {
+		cosA := math.Cos(angle)
+		sinA := math.Sin(angle)
+		for y := -ry - 2; y <= ry+2; y++ {
+			for x := -rx - 2; x <= rx+2; x++ {
+				xr := float64(x)*cosA + float64(y)*sinA
+				yr := -float64(x)*sinA + float64(y)*cosA
+				d := (xr*xr)/float64(rx*rx) + (yr*yr)/float64(ry*ry)
+				px := ox + x
+				py := oy + y
+				if px < 0 || px >= w || py < 0 || py >= h {
+					continue
+				}
+				if d <= 1.0 {
+					if d >= 0.75 {
+						rgba.Set(px, py, border)
+					} else {
+						rgba.Set(px, py, fill)
+					}
+				}
+			}
+		}
+		// Nucleus in center
+		nr := 4
+		for ny := -nr; ny <= nr; ny++ {
+			for nx := -nr; nx <= nr; nx++ {
+				if nx*nx+ny*ny <= nr*nr {
+					px := ox + nx
+					py := oy + ny
+					if px >= 0 && px < w && py >= 0 && py < h {
+						rgba.Set(px, py, nucleus)
+					}
+				}
+			}
+		}
+	}
+
+	// Draw 5 stylized cells with instance segmentation colors
+	// 1. Turquoise / Teal Cell
+	drawCell(cx-34, cy-22, 22, 16, 0.3,
+		color.RGBA{R: 190, G: 242, B: 235, A: 255},
+		color.RGBA{R: 20, G: 165, B: 150, A: 255},
+		color.RGBA{R: 10, G: 110, B: 100, A: 255})
+
+	// 2. Violet / Purple Cell
+	drawCell(cx+28, cy-20, 20, 18, -0.4,
+		color.RGBA{R: 230, G: 220, B: 255, A: 255},
+		color.RGBA{R: 120, G: 80, B: 230, A: 255},
+		color.RGBA{R: 70, G: 35, B: 170, A: 255})
+
+	// 3. Amber / Golden Cell (Selected instance with bounding box)
+	selX, selY, selRx, selRy := cx-8, cy+22, 24, 18
+	drawCell(selX, selY, selRx, selRy, 0.1,
+		color.RGBA{R: 255, G: 238, B: 200, A: 255},
+		color.RGBA{R: 240, G: 150, B: 20, A: 255},
+		color.RGBA{R: 180, G: 90, B: 10, A: 255})
+
+	// 4. Emerald Green Cell
+	drawCell(cx+36, cy+26, 18, 14, 0.5,
+		color.RGBA{R: 215, G: 248, B: 220, A: 255},
+		color.RGBA{R: 35, G: 175, B: 85, A: 255},
+		color.RGBA{R: 20, G: 115, B: 55, A: 255})
+
+	// 5. Sky Blue Cell
+	drawCell(cx-46, cy+18, 17, 13, -0.2,
+		color.RGBA{R: 215, G: 235, B: 255, A: 255},
+		color.RGBA{R: 45, G: 135, B: 245, A: 255},
+		color.RGBA{R: 25, G: 85, B: 180, A: 255})
+
+	// Bounding Box around the Amber selected cell (Instance detection bounding box)
+	bx0, by0 := selX-selRx-4, selY-selRy-4
+	bx1, by1 := selX+selRx+4, selY+selRy+4
+	boxCol := color.RGBA{R: 230, G: 140, B: 10, A: 255}
+	for x := bx0; x <= bx1; x++ {
+		if (x/3)%2 == 0 {
+			rgba.Set(x, by0, boxCol)
+			rgba.Set(x, by1, boxCol)
+		}
+	}
+	for y := by0; y <= by1; y++ {
+		if (y/3)%2 == 0 {
+			rgba.Set(bx0, y, boxCol)
+			rgba.Set(bx1, y, boxCol)
+		}
+	}
+	// Corner handles on bounding box
+	for _, pt := range [][2]int{{bx0, by0}, {bx1, by0}, {bx0, by1}, {bx1, by1}} {
+		for dy := -1; dy <= 1; dy++ {
+			for dx := -1; dx <= 1; dx++ {
+				rgba.Set(pt[0]+dx, pt[1]+dy, boxCol)
+			}
+		}
+	}
+
+	return ui.NewBitmap(rgba)
 }
 
 func (app *ViewerApp) openFileDialog() {
@@ -424,8 +595,74 @@ func (app *ViewerApp) view(c *ui.Context) {
 
 		// Viewport area
 		if app.rendered != nil {
-			ui.ScrollBoth(c).Grow(1).Children(func() {
-				imgElem := ui.Image(c, app.rendered).Cursor(ui.CursorCrosshair)
+			ui.ScrollBoth(c).TrackScroll(&app.canvasScroll).Grow(1).HandleInput(func(ev ui.InputEvent) bool {
+				if ev.Kind == ui.InputScroll {
+					if ev.DY < 0 {
+						app.zoomIn()
+						return true
+					} else if ev.DY > 0 {
+						app.zoomOut()
+						return true
+					}
+				}
+				if ev.Kind == ui.InputZoom {
+					if ev.Scale > 1.0 {
+						app.zoomIn()
+						return true
+					} else if ev.Scale < 1.0 {
+						app.zoomOut()
+						return true
+					}
+				}
+				if ev.Kind == ui.InputKeyDown {
+					switch ev.Key {
+					case ui.KeyEqual:
+						app.zoomIn()
+						return true
+					case ui.KeyMinus:
+						app.zoomOut()
+						return true
+					case ui.Key0:
+						app.fitWindow()
+						return true
+					case ui.Key1:
+						app.zoomScale = 1.0
+						app.refreshRender()
+						return true
+					case ui.KeyW, ui.KeyUp:
+						app.canvasScroll.Y -= 64
+						if app.canvasScroll.Y < 0 {
+							app.canvasScroll.Y = 0
+						}
+						return true
+					case ui.KeyS, ui.KeyDown:
+						app.canvasScroll.Y += 64
+						return true
+					case ui.KeyA, ui.KeyLeft:
+						app.canvasScroll.X -= 64
+						if app.canvasScroll.X < 0 {
+							app.canvasScroll.X = 0
+						}
+						return true
+					case ui.KeyD, ui.KeyRight:
+						app.canvasScroll.X += 64
+						return true
+					}
+				}
+				return false
+			}).Children(func() {
+				imgElem := ui.Image(c, app.rendered).Cursor(ui.CursorCrosshair).HandleInput(func(ev ui.InputEvent) bool {
+					if ev.Kind == ui.InputScroll {
+						if ev.DY < 0 {
+							app.zoomIn()
+							return true
+						} else if ev.DY > 0 {
+							app.zoomOut()
+							return true
+						}
+					}
+					return false
+				})
 				if px, py, over := imgElem.PointerPosition(); over && app.instMap != nil {
 					origX := int(float64(px) / app.zoomScale)
 					origY := int(float64(py) / app.zoomScale)
@@ -447,8 +684,23 @@ func (app *ViewerApp) view(c *ui.Context) {
 			})
 		} else {
 			ui.Column(c).Grow(1).Center().Gap(14).Children(func() {
-				ui.Text(c, "可以直接拖拽 AIsoftware2 的 .tif 掩码文件到此窗口直接查看").FontSize(18).Bold().TextAlign(ui.Center)
-				ui.Text(c, "支持单页大图矩阵、多页局部包围盒裁剪掩码、自动关联配准 _source_BF 底图").FontSize(13).TextAlign(ui.Center)
+				if app.placeholderBitmap != nil {
+					ui.Image(c, app.placeholderBitmap)
+				}
+				ui.Text(c, "TIFF 图像与细胞实例掩码查看器").FontSize(18).Bold().TextAlign(ui.Center)
+				ui.Text(c, "专为生物显微扫描、多实例细胞分割 (Multimasks) 与明场底图配准复核设计").FontSize(12).TextColor(ui.RGB(130, 145, 165)).TextAlign(ui.Center)
+
+				ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
+					if ui.Button(c, "📂 打开 TIFF 掩码文件...").Clicked() {
+						app.openFileDialog()
+					}
+					if ui.Button(c, "🔬 加载测试示例数据").Clicked() {
+						app.loadSampleData()
+					}
+				})
+
+				ui.Text(c, "支持格式: 单页大图矩阵 · 多页局部包围盒裁剪掩码 · 自动关联同名 _source_BF 底图").FontSize(11).TextColor(ui.RGB(150, 165, 185)).TextAlign(ui.Center)
+				ui.Text(c, "交互提示: 直接拖拽 .tif 文件到窗口 | 鼠标滚轮连续缩放 | 键盘 W/A/S/D 移动视口 | 点击细胞读取形心与面积").FontSize(11).TextColor(ui.RGB(160, 175, 195)).TextAlign(ui.Center)
 			})
 		}
 	})
@@ -467,6 +719,7 @@ func main() {
 		statusText:  "就绪：支持直接拖拽 .tif 文件到窗口",
 		hoverText:   "",
 	}
+	app.placeholderBitmap = generateCellPlaceholderBitmap()
 
 	// Handle initial command line argument if supplied
 	if len(os.Args) > 1 {
