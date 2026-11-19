@@ -39,6 +39,7 @@ type ViewerApp struct {
 	sortedCellIDs []uint32
 	statusText    string
 	hoverText     string
+	quitting      bool
 }
 
 func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
@@ -119,6 +120,7 @@ func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
 		{
 			Label: "退出 CellMaskViewer",
 			Click: func(*mygo.MenuItem, *mygo.Window) {
+				app.quitting = true
 				mygo.App.Quit()
 			},
 		},
@@ -475,6 +477,9 @@ func main() {
 	}))
 
 	mygo.App.SetName("CellMaskViewer")
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
+		app.quitting = true
+	})
 	mygo.App.WhenReady(func() {
 		app.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:     "AIsoftware2 TIFF 实例掩码查看器",
@@ -489,8 +494,10 @@ func main() {
 		app.setupTray()
 
 		app.win.OnClose(func(e *mygo.CloseEvent) {
-			e.PreventDefault()
-			app.win.Hide()
+			if !app.quitting {
+				e.PreventDefault()
+				app.win.Hide()
+			}
 		})
 
 		// Register drag and drop callback
