@@ -289,24 +289,6 @@ func (app *ViewerApp) zoomOut() {
 	app.refreshRender()
 }
 
-func (app *ViewerApp) loadSampleData() {
-	sampleCandidates := []string{
-		`C:\算法\AIsoftware2\tests_images\cellsegments\result\test_23700\B2_13_source_BF_mask_multimasks.tif`,
-		`C:\算法\AIsoftware2\tests_images\cellsegments\result\test_config_vit_b.yaml.tif`,
-		`C:\算法\AIsoftware2\tests_images\blue_foci\result\A1_13_output_BF_multimasks.tif`,
-	}
-	for _, s := range sampleCandidates {
-		if _, err := os.Stat(s); err == nil {
-			app.handlePath(s)
-			return
-		}
-	}
-	app.statusText = "未在本地找到默认测试样本，请点击'打开文件'选择本地 .tif 文件"
-	if app.win != nil {
-		app.win.Invalidate()
-	}
-}
-
 func generateCellPlaceholderBitmap() *ui.Bitmap {
 	w, h := 280, 180
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -697,14 +679,9 @@ func (app *ViewerApp) view(c *ui.Context) {
 				ui.Text(c, "TIFF 图像与细胞实例掩码查看器").FontSize(18).Bold().TextAlign(ui.Center)
 				ui.Text(c, "专为生物显微扫描、多实例细胞分割 (Multimasks) 与明场底图配准复核设计").FontSize(12).TextColor(ui.RGB(130, 145, 165)).TextAlign(ui.Center)
 
-				ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-					if ui.Button(c, "📂 打开 TIFF 掩码文件...").Clicked() {
-						app.openFileDialog()
-					}
-					if ui.Button(c, "🔬 加载测试示例数据").Clicked() {
-						app.loadSampleData()
-					}
-				})
+				if ui.Button(c, "📂 打开 TIFF 掩码文件...").Clicked() {
+					app.openFileDialog()
+				}
 
 				ui.Text(c, "支持格式: 单页大图矩阵 · 多页局部包围盒裁剪掩码 · 自动关联同名 _source_BF 底图").FontSize(11).TextColor(ui.RGB(150, 165, 185)).TextAlign(ui.Center)
 				ui.Text(c, "交互提示: 直接拖拽 .tif 文件到窗口 | 鼠标滚轮连续缩放 | 键盘 W/A/S/D 移动视口 | 点击细胞读取形心与面积").FontSize(11).TextColor(ui.RGB(160, 175, 195)).TextAlign(ui.Center)
