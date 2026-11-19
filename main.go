@@ -109,7 +109,12 @@ func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
 			},
 		},
 		mygo.Separator(),
-		updater.MenuItem(),
+		{
+			Label: "检查更新...",
+			Click: func(*mygo.MenuItem, *mygo.Window) {
+				updater.CheckForUpdates()
+			},
+		},
 		mygo.Separator(),
 		{
 			Label: "退出 CellMaskViewer",
@@ -464,7 +469,10 @@ func main() {
 	}
 
 	useMirroredUpdates()
-	mygo.Use(updater.New(updater.Options{Icon: appIconPNG}))
+	mygo.Use(updater.New(updater.Options{
+		Icon:     appIconPNG,
+		Language: "zh-Hans",
+	}))
 
 	mygo.App.SetName("CellMaskViewer")
 	mygo.App.WhenReady(func() {
