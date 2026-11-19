@@ -121,7 +121,10 @@ func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
 			Label: "退出 CellMaskViewer",
 			Click: func(*mygo.MenuItem, *mygo.Window) {
 				app.quitting = true
-				mygo.App.Quit()
+				if app.tray != nil {
+					app.tray.Destroy()
+				}
+				mygo.App.Exit(0)
 			},
 		},
 	})
