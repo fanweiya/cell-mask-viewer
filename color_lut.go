@@ -165,15 +165,16 @@ func RenderInstances(m *InstanceMap, opts RenderOptions, baseImg image.Image) *i
 		return rgba
 	}
 
-	// Precompute Color Table once to avoid per-pixel float/HSV calculations
-	maxID := uint32(m.TotalCells)
-	for _, id := range m.Labels {
-		if id > maxID {
-			maxID = id
-		}
+	// Precompute Color Table up to bounded limit to prevent excessive allocation on corrupt labels
+	limit := uint32(m.TotalCells + 1)
+	if limit < 1024 {
+		limit = 1024
 	}
-	colorTable := make([]color.RGBA, maxID+1)
-	for i := uint32(1); i <= maxID; i++ {
+	if limit > 200000 {
+		limit = 200000
+	}
+	colorTable := make([]color.RGBA, limit)
+	for i := uint32(1); i < limit; i++ {
 		colorTable[i] = GoldenRatioColor(i, opts.Seed)
 	}
 
@@ -229,7 +230,12 @@ func RenderInstances(m *InstanceMap, opts RenderOptions, baseImg image.Image) *i
 			}
 
 			isSelected := (opts.SelectedID > 0 && id == opts.SelectedID)
-			col := colorTable[id]
+			var col color.RGBA
+			if id < limit {
+				col = colorTable[id]
+			} else {
+				col = GoldenRatioColor(id, opts.Seed)
+			}
 
 			isEdge := false
 			if opts.Mode == ModeOutline || opts.Mode == ModeBoth || isSelected {

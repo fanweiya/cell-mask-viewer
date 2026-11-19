@@ -121,3 +121,29 @@ func BenchmarkRenderInstances_Synthetic4096(b *testing.B) {
 		_ = RenderInstances(m, opts, nil)
 	}
 }
+
+func TestRenderInstances_HighIDDoesNotCrash(t *testing.T) {
+	// Verify that labels with large IDs or corrupt metadata do not trigger OOM or panic
+	m := &InstanceMap{
+		Width:      10,
+		Height:     10,
+		TotalCells: 2,
+		Labels:     make([]uint32, 100),
+	}
+	m.Labels[0] = 0xFFFFFFFF
+	m.Labels[1] = 9999999
+	m.Labels[2] = 1
+
+	opts := RenderOptions{
+		Mode:        ModeBoth,
+		Opacity:     0.5,
+		StrokeWidth: 1,
+		MaskVisible: true,
+		Seed:        42,
+	}
+
+	img := RenderInstances(m, opts, nil)
+	if img == nil {
+		t.Fatalf("expected non-nil image")
+	}
+}
