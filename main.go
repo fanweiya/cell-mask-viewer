@@ -21,7 +21,7 @@ import (
 //go:embed icon.png
 var appIconPNG []byte
 
-const appVersion = "0.1.3"
+const appVersion = "0.1.4"
 
 // ViewerApp controls the GUI state and rendering pipeline.
 type ViewerApp struct {
@@ -557,15 +557,19 @@ func (app *ViewerApp) fitWindow() {
 
 func (app *ViewerApp) view(c *ui.Context) {
 	ui.Column(c).Fill().Children(func() {
-		// Control toolbar 1: Main operations with responsive wrapping
+		// Control toolbar: Functionally grouped main operations with responsive wrapping
 		ui.Row(c).Wrap().Padding(8, 12).Gap(8).AlignItems(ui.Center).Children(func() {
-			if ui.Button(c, "打开文件").Clicked() {
+			// Group 1: File actions
+			if ui.Button(c, "📂 打开文件").Clicked() {
 				app.openFileDialog()
 			}
-			if ui.Button(c, "导出 PNG...").Clicked() {
+			if ui.Button(c, "💾 导出 PNG...").Clicked() {
 				app.exportPNG()
 			}
 
+			ui.Text(c, "┆").TextColor(ui.RGB(200, 210, 225))
+
+			// Group 2: Display & Styling
 			sel := ui.Select(c, &app.modeStr, []string{"填充加轮廓", "半透明填充", "只显示轮廓"}).Width(110)
 			if sel.Changed() {
 				switch app.modeStr {
@@ -588,12 +592,12 @@ func (app *ViewerApp) view(c *ui.Context) {
 				app.refreshRender()
 			}
 
-			if ui.Button(c, "打乱调色板").Clicked() {
+			if ui.Button(c, "打乱配色").Clicked() {
 				app.colorSeed++
 				app.refreshRender()
 			}
 
-			strokeLabel := fmt.Sprintf("描边: %d像素", app.strokeWidth)
+			strokeLabel := fmt.Sprintf("描边: %dpx", app.strokeWidth)
 			if ui.Button(c, strokeLabel).Clicked() {
 				if app.strokeWidth == 1 {
 					app.strokeWidth = 2
@@ -604,12 +608,24 @@ func (app *ViewerApp) view(c *ui.Context) {
 			}
 
 			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "透明度:").FontSize(12).SingleLine()
+				ui.Text(c, "透明度:").FontSize(12).SingleLine().TextColor(ui.RGB(110, 125, 140))
 				ui.Slider(c, &app.opacity, 0.1, 1.0).Width(80).OnChange(func() {
 					app.refreshRender()
 				})
 			})
 
+			ui.Text(c, "┆").TextColor(ui.RGB(200, 210, 225))
+
+			// Group 3: Zoom Controls
+			if ui.Button(c, "－").Clicked() {
+				app.zoomOut()
+			}
+			if ui.Button(c, "＋").Clicked() {
+				app.zoomIn()
+			}
+			if ui.Button(c, "适应窗口").Clicked() {
+				app.fitWindow()
+			}
 			if ui.Button(c, "100%").Clicked() {
 				app.zoomScale = 1.0
 				app.refreshRender()
@@ -618,22 +634,10 @@ func (app *ViewerApp) view(c *ui.Context) {
 				app.zoomScale = 0.5
 				app.refreshRender()
 			}
-			if ui.Button(c, "25%").Clicked() {
-				app.zoomScale = 0.25
-				app.refreshRender()
-			}
-			if ui.Button(c, "适应窗口").Clicked() {
-				app.fitWindow()
-			}
 
-			if ui.Button(c, "检查更新").Clicked() {
-				updater.CheckForUpdates()
-			}
-		})
+			ui.Text(c, "┆").TextColor(ui.RGB(200, 210, 225))
 
-		// Control toolbar 2: Instance measurement & inspector card
-		ui.Row(c).Wrap().Padding(6, 12).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "实例测量:").FontSize(12).SingleLine()
+			// Group 4: Cell stepping
 			if ui.Button(c, "◀ 上一个").Clicked() {
 				app.selectPrevCell()
 			}
@@ -644,24 +648,14 @@ func (app *ViewerApp) view(c *ui.Context) {
 				if ui.Button(c, "取消选中").Clicked() {
 					app.selectCell(0)
 				}
-				if cm, ok := app.cellMetrics[app.selectedID]; ok {
-					bw := cm.MaxX - cm.MinX + 1
-					bh := cm.MaxY - cm.MinY + 1
-					info := fmt.Sprintf("【实例 #%d】 面积: %d 像素 | 外接尺寸: %d×%d 像素 | 范围: [%d, %d] - [%d, %d] | 形心: (%.1f, %.1f)",
-						cm.ID, cm.Area, bw, bh, cm.MinX, cm.MinY, cm.MaxX, cm.MaxY, cm.CentroidX, cm.CentroidY)
-					ui.Text(c, info).FontSize(12).SingleLine()
-				}
-			} else {
-				ui.Text(c, "提示: 点击图像中任意细胞即可选中高亮并读取测量参数").FontSize(12).SingleLine()
 			}
 
-			if app.hoverText != "" {
-				ui.Text(c, "| "+app.hoverText).FontSize(12).SingleLine()
-			}
-			if app.statusText != "" {
-				ui.Text(c, "| "+app.statusText).FontSize(12).SingleLine()
+			if ui.Button(c, "检查更新").Clicked() {
+				updater.CheckForUpdates()
 			}
 		})
+
+		ui.Divider(c)
 
 		// Viewport area
 		if app.rendered != nil {
@@ -753,21 +747,48 @@ func (app *ViewerApp) view(c *ui.Context) {
 				}
 			})
 		} else {
-			ui.Column(c).Grow(1).Center().Gap(14).Children(func() {
+			ui.Column(c).Grow(1).Center().Gap(10).Padding(16, 16).Children(func() {
 				if app.placeholderBitmap != nil {
 					ui.Image(c, app.placeholderBitmap)
 				}
 				ui.Text(c, "TIFF 图像与细胞实例掩码查看器").FontSize(18).Bold().TextAlign(ui.Center)
-				ui.Text(c, "专为生物显微扫描、多实例细胞分割 (Multimasks) 与明场底图配准复核设计").FontSize(12).TextColor(ui.RGB(130, 145, 165)).TextAlign(ui.Center)
+				ui.Text(c, "专为生物显微扫描、多实例细胞分割与明场底图配准复核设计").FontSize(12).TextColor(ui.RGB(130, 145, 165)).TextAlign(ui.Center)
 
 				if ui.Button(c, "📂 打开 TIFF 掩码文件...").Clicked() {
 					app.openFileDialog()
 				}
 
 				ui.Text(c, "支持格式: 单页大图矩阵 · 多页局部包围盒裁剪掩码 · 自动关联同名 _source_BF 底图").FontSize(11).TextColor(ui.RGB(150, 165, 185)).TextAlign(ui.Center)
-				ui.Text(c, "交互提示: 直接拖拽 .tif 文件到窗口 | 鼠标滚轮连续缩放 | 键盘 W/A/S/D 移动视口 | 点击细胞读取形心与面积").FontSize(11).TextColor(ui.RGB(160, 175, 195)).TextAlign(ui.Center)
+				ui.Text(c, "交互提示: 直接拖拽 .tif 文件到窗口 | 滚轮连续缩放 | WASD/方向键平移 | 点击细胞读取形心与面积").FontSize(11).TextColor(ui.RGB(160, 175, 195)).TextAlign(ui.Center)
 			})
 		}
+
+		// Dedicated Bottom Status Bar for measurements & inspection details
+		ui.Divider(c)
+		ui.Row(c).Wrap().Padding(6, 14).Gap(10).AlignItems(ui.Center).Children(func() {
+			if app.selectedID > 0 {
+				if cm, ok := app.cellMetrics[app.selectedID]; ok {
+					bw := cm.MaxX - cm.MinX + 1
+					bh := cm.MaxY - cm.MinY + 1
+					info := fmt.Sprintf("【实例 #%d】 面积: %d px | 尺寸: %d×%d px | 范围: [%d,%d - %d,%d] | 形心: (%.1f, %.1f)",
+						cm.ID, cm.Area, bw, bh, cm.MinX, cm.MinY, cm.MaxX, cm.MaxY, cm.CentroidX, cm.CentroidY)
+					ui.Text(c, info).FontSize(11).Bold().TextColor(ui.RGB(0, 130, 210)).SingleLine()
+				}
+			} else {
+				ui.Text(c, "提示: 点击细胞可高亮并读取测量参数").FontSize(11).TextColor(ui.RGB(130, 145, 165)).SingleLine()
+			}
+
+			ui.Text(c, "┆").TextColor(ui.RGB(200, 210, 225))
+
+			if app.hoverText != "" {
+				ui.Text(c, app.hoverText).FontSize(11).TextColor(ui.RGB(80, 95, 115)).SingleLine()
+			}
+			if app.statusText != "" {
+				ui.Text(c, "· "+app.statusText).FontSize(11).TextColor(ui.RGB(110, 125, 145)).SingleLine()
+			}
+
+			ui.Text(c, "[滚轮缩放 · WASD平移 · 0适应窗口]").FontSize(11).TextColor(ui.RGB(150, 165, 185)).SingleLine()
+		})
 	})
 }
 
@@ -803,7 +824,7 @@ func main() {
 	})
 	mygo.App.WhenReady(func() {
 		app.win = mygo.NewWindow(mygo.WindowOptions{
-			Title:     "AIsoftware2 TIFF 实例掩码查看器 v" + appVersion,
+			Title:     "AIsoftware2 TIFF 实例掩码查看器",
 			Width:     1280,
 			Height:    900,
 			MinWidth:  800,
