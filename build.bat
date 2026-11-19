@@ -24,16 +24,17 @@ if %ERRORLEVEL% equ 0 (
 ) else (
     go build -ldflags "-s -w -H windowsgui" -o "CellMaskViewer.exe" .
 )
+set BUILD_CODE=%ERRORLEVEL%
 
 if exist "build\windows-amd64\CellMaskViewer.exe" (
-    copy /y "build\windows-amd64\CellMaskViewer.exe" "CellMaskViewer.exe" >nul
+    copy /y "build\windows-amd64\CellMaskViewer.exe" "CellMaskViewer.exe" >nul 2>nul
 )
 
-if %ERRORLEVEL% equ 0 (
+if %BUILD_CODE% equ 0 (
     echo.
     echo ====================================================
     echo [BUILD SUCCESS] CellMaskViewer.exe is ready with embedded icon and update signatures.
     echo ====================================================
 ) else (
-    echo [BUILD FAILED] Code: %ERRORLEVEL%
+    echo [BUILD FAILED] Code: %BUILD_CODE%
 )
