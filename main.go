@@ -557,20 +557,41 @@ func (app *ViewerApp) fitWindow() {
 
 func (app *ViewerApp) view(c *ui.Context) {
 	ui.Column(c).Fill().Children(func() {
-		// Control toolbar: Functionally grouped main operations with responsive wrapping
-		ui.Row(c).Wrap().Padding(8, 12).Gap(8).AlignItems(ui.Center).Children(func() {
-			// Group 1: File actions
-			if ui.Button(c, "📂 打开文件").Clicked() {
+		// Global Keyboard Shortcuts
+		if c.Shortcut(ui.Ctrl, ui.KeyO) {
+			app.openFileDialog()
+		}
+		if c.Shortcut(ui.Ctrl, ui.KeyE) {
+			app.exportPNG()
+		}
+		if c.Shortcut(ui.Ctrl, ui.Key0) {
+			app.fitWindow()
+		}
+		if c.Shortcut(0, ui.KeyM) && !c.ShortcutRepeated() {
+			app.maskVisible = !app.maskVisible
+			app.refreshRender()
+		}
+		if c.Shortcut(0, ui.KeyR) && !c.ShortcutRepeated() {
+			app.colorSeed++
+			app.refreshRender()
+		}
+		if c.Shortcut(0, ui.KeyEscape) {
+			if app.selectedID > 0 {
+				app.selectCell(0)
+			}
+		}
+
+		// Control toolbar: Functionally prioritized single row with automatic overflow menu
+		ui.Toolbar(c, func() {
+			// P0: Core Operations
+			if ui.Button(c, "📂 打开").Tooltip("打开图像或掩码文件 (Ctrl+O)").Clicked() {
 				app.openFileDialog()
 			}
-			if ui.Button(c, "💾 导出 PNG...").Clicked() {
+			if ui.Button(c, "💾 导出").Tooltip("导出当前视图为 PNG (Ctrl+E)").Clicked() {
 				app.exportPNG()
 			}
 
-			ui.Text(c, "┆").TextColor(ui.RGB(200, 210, 225))
-
-			// Group 2: Display & Styling
-			sel := ui.Select(c, &app.modeStr, []string{"填充加轮廓", "半透明填充", "只显示轮廓"}).Width(110)
+			sel := ui.Select(c, &app.modeStr, []string{"填充加轮廓", "半透明填充", "只显示轮廓"}).Width(100)
 			if sel.Changed() {
 				switch app.modeStr {
 				case "半透明填充":
@@ -583,22 +604,50 @@ func (app *ViewerApp) view(c *ui.Context) {
 				app.refreshRender()
 			}
 
+			if ui.Button(c, "＋").Tooltip("放大视图 (+)").Clicked() {
+				app.zoomIn()
+			}
+			if ui.Button(c, "－").Tooltip("缩小视图 (-)").Clicked() {
+				app.zoomOut()
+			}
+			if ui.Button(c, "适应窗口").Tooltip("缩放适应窗口 (Ctrl+0)").Clicked() {
+				app.fitWindow()
+			}
+
+			// P1: Viewing & Navigation
 			maskLabel := "掩码: 显示"
 			if !app.maskVisible {
 				maskLabel = "掩码: 隐藏"
 			}
-			if ui.Button(c, maskLabel).Clicked() {
+			if ui.Button(c, maskLabel).Tooltip("切换掩码可见性 (M)").Clicked() {
 				app.maskVisible = !app.maskVisible
 				app.refreshRender()
 			}
 
-			if ui.Button(c, "打乱配色").Clicked() {
+			if ui.Button(c, "100%").Tooltip("100% 原始比例 (1)").Clicked() {
+				app.zoomScale = 1.0
+				app.refreshRender()
+			}
+			if ui.Button(c, "50%").Tooltip("50% 比例缩放").Clicked() {
+				app.zoomScale = 0.5
+				app.refreshRender()
+			}
+
+			if ui.Button(c, "◀ 上一个").Tooltip("定位至上一个细胞").Clicked() {
+				app.selectPrevCell()
+			}
+			if ui.Button(c, "下一个 ▶").Tooltip("定位至下一个细胞").Clicked() {
+				app.selectNextCell()
+			}
+
+			// P2: Auxiliaries & Styling (automatically placed in overflow menu when narrow)
+			if ui.Button(c, "打乱配色").Tooltip("随机重新着色 (R)").Clicked() {
 				app.colorSeed++
 				app.refreshRender()
 			}
 
 			strokeLabel := fmt.Sprintf("描边: %dpx", app.strokeWidth)
-			if ui.Button(c, strokeLabel).Clicked() {
+			if ui.Button(c, strokeLabel).Tooltip("切换轮廓描边粗细").Clicked() {
 				if app.strokeWidth == 1 {
 					app.strokeWidth = 2
 				} else {
@@ -607,53 +656,30 @@ func (app *ViewerApp) view(c *ui.Context) {
 				app.refreshRender()
 			}
 
-			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "透明度:").FontSize(12).SingleLine().TextColor(ui.RGB(110, 125, 140))
-				ui.Slider(c, &app.opacity, 0.1, 1.0).Width(80).OnChange(func() {
-					app.refreshRender()
-				})
-			})
-
-			ui.Text(c, "┆").TextColor(ui.RGB(200, 210, 225))
-
-			// Group 3: Zoom Controls
-			if ui.Button(c, "－").Clicked() {
-				app.zoomOut()
-			}
-			if ui.Button(c, "＋").Clicked() {
-				app.zoomIn()
-			}
-			if ui.Button(c, "适应窗口").Clicked() {
-				app.fitWindow()
-			}
-			if ui.Button(c, "100%").Clicked() {
-				app.zoomScale = 1.0
-				app.refreshRender()
-			}
-			if ui.Button(c, "50%").Clicked() {
-				app.zoomScale = 0.5
+			opLabel := fmt.Sprintf("透明度: %d%%", int(app.opacity*100))
+			if ui.Button(c, opLabel).Tooltip("点击循环切换透明度 (30%/50%/80%/100%)").Clicked() {
+				if app.opacity < 0.4 {
+					app.opacity = 0.5
+				} else if app.opacity < 0.65 {
+					app.opacity = 0.8
+				} else if app.opacity < 0.95 {
+					app.opacity = 1.0
+				} else {
+					app.opacity = 0.3
+				}
 				app.refreshRender()
 			}
 
-			ui.Text(c, "┆").TextColor(ui.RGB(200, 210, 225))
-
-			// Group 4: Cell stepping
-			if ui.Button(c, "◀ 上一个").Clicked() {
-				app.selectPrevCell()
-			}
-			if ui.Button(c, "下一个 ▶").Clicked() {
-				app.selectNextCell()
-			}
 			if app.selectedID > 0 {
-				if ui.Button(c, "取消选中").Clicked() {
+				if ui.Button(c, "取消选中").Tooltip("取消当前高亮细胞 (Esc)").Clicked() {
 					app.selectCell(0)
 				}
 			}
 
-			if ui.Button(c, "检查更新").Clicked() {
+			if ui.Button(c, "检查更新").Tooltip("检查最新版本更新").Clicked() {
 				updater.CheckForUpdates()
 			}
-		})
+		}).Padding(4, 10)
 
 		ui.Divider(c)
 
@@ -823,15 +849,34 @@ func main() {
 		app.quitting = true
 	})
 	mygo.App.WhenReady(func() {
+		initW := 1280
+		initH := 860
+		disp := mygo.Screen.PrimaryDisplay()
+		if wa := disp.WorkArea; wa.Width > 0 && wa.Height > 0 {
+			if initW > wa.Width-40 {
+				initW = wa.Width - 40
+			}
+			if initH > wa.Height-60 {
+				initH = wa.Height - 60
+			}
+			if initW < 720 {
+				initW = wa.Width
+			}
+			if initH < 520 {
+				initH = wa.Height
+			}
+		}
+
 		app.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:     "AIsoftware2 TIFF 实例掩码查看器",
-			Width:     1280,
-			Height:    860,
-			MinWidth:  800,
-			MinHeight: 560,
+			Width:     initW,
+			Height:    initH,
+			MinWidth:  720,
+			MinHeight: 520,
 			Content:   ui.View(app.view),
 		})
 		_ = app.win.SetIcon(appIconPNG)
+		app.win.Center()
 
 		app.setupTray()
 
