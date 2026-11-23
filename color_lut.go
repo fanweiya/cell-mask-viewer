@@ -16,9 +16,18 @@ const (
 	ModeBoth
 )
 
+// ColorMode defines how instance colors are assigned.
+type ColorMode int
+
+const (
+	ColorPerInstance ColorMode = iota // 每个实例独立颜色（默认）
+	ColorUniform                       // 所有实例同一颜色
+)
+
 // RenderOptions holds configuration parameters for instance map rendering.
 type RenderOptions struct {
 	Mode        RenderMode
+	ColorMode   ColorMode
 	Opacity     float64
 	Seed        uint32
 	StrokeWidth int
@@ -231,7 +240,9 @@ func RenderInstances(m *InstanceMap, opts RenderOptions, baseImg image.Image) *i
 
 			isSelected := (opts.SelectedID > 0 && id == opts.SelectedID)
 			var col color.RGBA
-			if id < limit {
+			if opts.ColorMode == ColorUniform {
+				col = GoldenRatioColor(1, opts.Seed)
+			} else if id < limit {
 				col = colorTable[id]
 			} else {
 				col = GoldenRatioColor(id, opts.Seed)

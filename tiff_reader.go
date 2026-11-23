@@ -30,7 +30,7 @@ type tiffMetadata struct {
 
 // ReadTIFFMask parses the given TIFF file using github.com/google/tiff and zlib decompression.
 func ReadTIFFMask(filePath string) (*InstanceMap, error) {
-	f, err := os.Open(filePath)
+	f, err := os.Open(longPath(filePath))
 	if err != nil {
 		return nil, fmt.Errorf("open file failed: %w", err)
 	}
@@ -169,7 +169,7 @@ func decodeSinglePage(r io.ReaderAt, ifd tiff.IFD, meta tiffMetadata) (*Instance
 		}
 	} else if bits == 32 {
 		for i := 0; i < len(labels); i++ {
-			labels[i] = order.Uint32(raw[i*4 : i*4+4])
+			labels[i] = unpackPackedLabel(order.Uint32(raw[i*4 : i*4+4]))
 		}
 	} else {
 		for i := 0; i < len(labels); i++ {
@@ -183,6 +183,18 @@ func decodeSinglePage(r io.ReaderAt, ifd tiff.IFD, meta tiffMetadata) (*Instance
 		TotalCells: meta.TotalCells,
 		Labels:     labels,
 	}, nil
+}
+
+// unpackPackedLabel decodes a single-page uint32 mask pixel written by the
+// AIsoftware2 packed format: value = (cell_index << 8) | cell_mask.
+// cell_index occupies the high bits; cell_mask (0/1/2) occupies the low byte.
+// Pixels with cell_mask == 0 are bbox background and decode to label 0.
+func unpackPackedLabel(v uint32) uint32 {
+	idx := v >> 8
+	if idx > 0 && (v&0xFF) > 0 {
+		return idx
+	}
+	return 0
 }
 
 func decodeMultiPageCrop(r io.ReaderAt, ifds []tiff.IFD) (*InstanceMap, error) {

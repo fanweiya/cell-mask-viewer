@@ -16,13 +16,14 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 )
 
 //go:embed icon.png
 var appIconPNG []byte
 
-const appVersion = "0.1.4"
+const appVersion = "0.1.5"
 
 // ViewerConfigData stores user preferences across runs
 type ViewerConfigData struct {
@@ -48,6 +49,7 @@ type ViewerApp struct {
 	placeholderBitmap *ui.Bitmap
 	canvasScroll      ui.ScrollState
 	mode              RenderMode
+	colorMode         ColorMode
 	modeStr           string
 	opacity           float64
 	zoomScale         float64
@@ -60,6 +62,14 @@ type ViewerApp struct {
 	statusText        string
 	hoverText         string
 	quitting          bool
+
+	// Canvas navigation state (V2 anchor zoom, V3 space-drag pan, V6 F1 help).
+	spacePan bool
+	panning  bool
+	panLastX float32
+	panLastY float32
+	showHelp bool
+	dpiScale float64
 }
 
 func (app *ViewerApp) buildTrayMenu() *mygo.Menu {
@@ -216,6 +226,7 @@ func (app *ViewerApp) refreshRender() {
 	}
 	opts := RenderOptions{
 		Mode:        app.mode,
+		ColorMode:   app.colorMode,
 		Opacity:     app.opacity,
 		Seed:        app.colorSeed,
 		StrokeWidth: app.strokeWidth,
@@ -268,27 +279,7 @@ func (app *ViewerApp) loadMask(path string) {
 	app.statusText = fmt.Sprintf("文件: %s | 尺寸: %dx%d | 实例总数: %d",
 		filepath.Base(path), app.instMap.Width, app.instMap.Height, app.instMap.TotalCells)
 
-	dir := filepath.Dir(app.maskPath)
-	baseName := filepath.Base(app.maskPath)
-	prefix := strings.Split(baseName, "_")[0]
-
-	matches, _ := filepath.Glob(filepath.Join(dir, prefix+"*_source_*.jpg"))
-	if len(matches) == 0 {
-		matches, _ = filepath.Glob(filepath.Join(filepath.Dir(dir), prefix+"*_source_*.jpg"))
-	}
-
 	app.baseImage = nil
-	if len(matches) > 0 {
-		f, err := os.Open(matches[0])
-		if err == nil {
-			img, _, err := image.Decode(f)
-			f.Close()
-			if err == nil {
-				app.baseImage = img
-				app.statusText += fmt.Sprintf(" | 底图: %s", filepath.Base(matches[0]))
-			}
-		}
-	}
 
 	app.refreshRender()
 	if app.win != nil {
@@ -310,6 +301,60 @@ func (app *ViewerApp) zoomOut() {
 		app.zoomScale = 0.05
 	}
 	app.refreshRender()
+}
+
+// watchDPI keeps layout metrics in step with the monitor's scale factor, so
+// labels and fixed-width panels do not clip after crossing monitors with
+// different DPI (the process already runs PerMonitorV2).
+func (app *ViewerApp) watchDPI() {
+	if app.win == nil {
+		return
+	}
+	app.dpiScale = mygo.Screen.DisplayMatching(app.win.Bounds()).ScaleFactor
+	app.win.OnMove(func() {
+		if app.win == nil {
+			return
+		}
+		app.applyDPIScale(mygo.Screen.DisplayMatching(app.win.Bounds()).ScaleFactor)
+	})
+}
+
+// applyDPIScale re-derives viewport metrics for a new scale factor.
+func (app *ViewerApp) applyDPIScale(scale float64) {
+	if scale <= 0 || scale == app.dpiScale {
+		return
+	}
+	app.dpiScale = scale
+	app.fitWindow()
+	app.statusText = fmt.Sprintf("显示缩放已切换至 %.0f%%，已按新 DPI 重新适配视口", scale*100)
+	if app.win != nil {
+		app.win.Invalidate()
+	}
+}
+
+// zoomStepAt zooms around the pointer: the image point under the cursor stays
+// anchored, instead of every step scaling from the view's top-left corner.
+func (app *ViewerApp) zoomStepAt(cursorX, cursorY float32, zoomInDirection bool) {
+	oldScale := app.zoomScale
+	if zoomInDirection {
+		app.zoomIn()
+	} else {
+		app.zoomOut()
+	}
+	if oldScale <= 0 || app.zoomScale <= 0 || oldScale == app.zoomScale {
+		return
+	}
+	ratio := float32(app.zoomScale / oldScale)
+	nx := (app.canvasScroll.X+cursorX)*ratio - cursorX
+	ny := (app.canvasScroll.Y+cursorY)*ratio - cursorY
+	if nx < 0 {
+		nx = 0
+	}
+	if ny < 0 {
+		ny = 0
+	}
+	app.canvasScroll.X = nx
+	app.canvasScroll.Y = ny
 }
 
 func generateCellPlaceholderBitmap() *ui.Bitmap {
@@ -463,6 +508,49 @@ func (app *ViewerApp) openFileDialog() {
 	app.handlePath(paths[0])
 }
 
+func (app *ViewerApp) openBaseImageDialog() {
+	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+		Title:       "选择底层明场底图",
+		DefaultPath: app.lastDir,
+		Filters: []mygo.FileFilter{
+			{Name: "Images", Extensions: []string{"jpg", "jpeg", "png", "bmp", "tif", "tiff"}},
+		},
+	})
+	if err != nil {
+		app.statusText = fmt.Sprintf("打开底图对话框失败: %v", err)
+		if app.win != nil {
+			app.win.Invalidate()
+		}
+		return
+	}
+	if len(paths) == 0 {
+		return
+	}
+	path := paths[0]
+	f, err := os.Open(longPath(path))
+	if err != nil {
+		app.statusText = fmt.Sprintf("打开底图失败: %v", err)
+		if app.win != nil {
+			app.win.Invalidate()
+		}
+		return
+	}
+	img, _, err := image.Decode(f)
+	f.Close()
+	if err != nil {
+		app.statusText = fmt.Sprintf("解码底图失败: %v", err)
+		if app.win != nil {
+			app.win.Invalidate()
+		}
+		return
+	}
+	app.baseImage = img
+	app.refreshRender()
+	if app.win != nil {
+		app.win.Invalidate()
+	}
+}
+
 func (app *ViewerApp) exportPNG() {
 	if app.renderedRGBA == nil {
 		app.statusText = "当前无渲染结果可导出"
@@ -580,7 +668,7 @@ func (app *ViewerApp) handlePath(path string) {
 	if ext == ".tif" || ext == ".tiff" {
 		app.loadMask(path)
 	} else if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
-		f, err := os.Open(path)
+		f, err := os.Open(longPath(path))
 		if err != nil {
 			app.statusText = fmt.Sprintf("打开底图失败: %v", err)
 			if app.win != nil {
@@ -673,6 +761,9 @@ func (app *ViewerApp) view(c *ui.Context) {
 			if ui.Button(c, "💾 导出").Tooltip("导出当前视图为 PNG (Ctrl+E)").Clicked() {
 				app.exportPNG()
 			}
+			if ui.Button(c, "🖼 底图").Tooltip("选择底层明场图像作为背景").Clicked() {
+				app.openBaseImageDialog()
+			}
 
 			sel := ui.Select(c, &app.modeStr, []string{"填充加轮廓", "半透明填充", "只显示轮廓"}).Width(100)
 			if sel.Changed() {
@@ -724,6 +815,19 @@ func (app *ViewerApp) view(c *ui.Context) {
 			}
 
 			// P2: Auxiliaries & Styling (automatically placed in overflow menu when narrow)
+			colorLabel := "配色: 随机"
+			if app.colorMode == ColorUniform {
+				colorLabel = "配色: 统一"
+			}
+			if ui.Button(c, colorLabel).Tooltip("切换配色模式：随机为每个实例独立颜色，统一为所有实例同色").Clicked() {
+				if app.colorMode == ColorPerInstance {
+					app.colorMode = ColorUniform
+				} else {
+					app.colorMode = ColorPerInstance
+				}
+				app.refreshRender()
+			}
+
 			if ui.Button(c, "打乱配色").Tooltip("随机重新着色 (R，支持 Ctrl+Z 撤销)").Clicked() {
 				app.seedHistory = append(app.seedHistory, app.colorSeed)
 				app.colorSeed++
@@ -772,10 +876,10 @@ func (app *ViewerApp) view(c *ui.Context) {
 			ui.ScrollBoth(c).TrackScroll(&app.canvasScroll).Grow(1).HandleInput(func(ev ui.InputEvent) bool {
 				if ev.Kind == ui.InputScroll {
 					if ev.DY < 0 {
-						app.zoomIn()
+						app.zoomStepAt(ev.X, ev.Y, true)
 						return true
 					} else if ev.DY > 0 {
-						app.zoomOut()
+						app.zoomStepAt(ev.X, ev.Y, false)
 						return true
 					}
 				}
@@ -788,8 +892,20 @@ func (app *ViewerApp) view(c *ui.Context) {
 						return true
 					}
 				}
+				if ev.Kind == ui.InputKeyUp {
+					if ev.Key == ui.KeySpace {
+						app.spacePan = false
+						return true
+					}
+				}
 				if ev.Kind == ui.InputKeyDown {
 					switch ev.Key {
+					case ui.KeySpace:
+						app.spacePan = true
+						return true
+					case ui.KeyF1:
+						app.showHelp = true
+						return true
 					case ui.KeyEqual:
 						app.zoomIn()
 						return true
@@ -821,6 +937,34 @@ func (app *ViewerApp) view(c *ui.Context) {
 					case ui.KeyD, ui.KeyRight:
 						app.canvasScroll.X += 64
 						return true
+					}
+				}
+				if app.spacePan {
+					if ev.Kind == ui.InputPointerDown && ev.Button == 0 {
+						app.panning = true
+						app.panLastX = ev.X
+						app.panLastY = ev.Y
+						return true
+					}
+					if ev.Kind == ui.InputPointerMove && app.panning {
+						dx := ev.X - app.panLastX
+						dy := ev.Y - app.panLastY
+						app.panLastX = ev.X
+						app.panLastY = ev.Y
+						nx := app.canvasScroll.X - dx
+						ny := app.canvasScroll.Y - dy
+						if nx < 0 {
+							nx = 0
+						}
+						if ny < 0 {
+							ny = 0
+						}
+						app.canvasScroll.X = nx
+						app.canvasScroll.Y = ny
+						return true
+					}
+					if ev.Kind == ui.InputPointerUp {
+						app.panning = false
 					}
 				}
 				return false
@@ -868,7 +1012,7 @@ func (app *ViewerApp) view(c *ui.Context) {
 					app.openFileDialog()
 				}
 
-				ui.Text(c, "支持格式: 单页大图矩阵 · 多页局部包围盒裁剪掩码 · 自动关联同名 _source_BF 底图").FontSize(11).TextColor(ui.RGB(150, 165, 185)).TextAlign(ui.Center)
+				ui.Text(c, "支持格式: 单页大图矩阵 · 多页局部包围盒裁剪掩码").FontSize(11).TextColor(ui.RGB(150, 165, 185)).TextAlign(ui.Center)
 				ui.Text(c, "交互提示: 直接拖拽 .tif 文件到窗口 | 滚轮连续缩放 | WASD/方向键平移 | 点击细胞读取形心与面积").FontSize(11).TextColor(ui.RGB(160, 175, 195)).TextAlign(ui.Center)
 			})
 		}
@@ -894,19 +1038,53 @@ func (app *ViewerApp) view(c *ui.Context) {
 				ui.Text(c, app.hoverText).FontSize(11).TextColor(ui.RGB(80, 95, 115)).SingleLine()
 			}
 			if app.statusText != "" {
-				ui.Text(c, "· "+app.statusText).FontSize(11).TextColor(ui.RGB(110, 125, 145)).SingleLine()
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "· "+app.statusText).FontSize(11).TextColor(ui.RGB(110, 125, 145)).SingleLine()
+					if ui.Button(c, "复制").Clicked() {
+						_ = mygo.Clipboard.Write(transfer.TextData(app.statusText))
+					}
+				})
 			}
 
-			ui.Text(c, "[滚轮缩放 · WASD平移 · 0适应窗口]").FontSize(11).TextColor(ui.RGB(150, 165, 185)).SingleLine()
+			ui.Text(c, "[滚轮光标缩放 · 空格拖拽平移 · 0 适应窗口 · F1 快捷键]").FontSize(11).TextColor(ui.RGB(150, 165, 185)).SingleLine()
 		})
+
+		ui.Modal(c, &app.showHelp, func() {
+			app.renderShortcutHelp(c)
+		})
+	})
+}
+
+// renderShortcutHelp lists every canvas shortcut in one panel, opened with F1.
+func (app *ViewerApp) renderShortcutHelp(c *ui.Context) {
+	ui.Column(c).Width(430).Gap(8).Children(func() {
+		ui.Text(c, "快捷键速查").FontSize(16).Bold().TextColor(ui.RGB(40, 60, 85))
+		ui.Divider(c)
+		for _, line := range []string{
+			"滚轮 / = / -  ：以光标为中心缩放",
+			"0  ：适应窗口",
+			"1  ：100% 原始比例",
+			"WASD / 方向键  ：平移画布 (64 像素)",
+			"空格 + 拖拽  ：自由平移画布",
+			"Ctrl+Z  ：撤销上一次配色",
+			"F1  ：打开 / 关闭本速查面板",
+			"点击细胞  ：高亮并读取测量参数",
+		} {
+			ui.Text(c, line).FontSize(12).TextColor(ui.RGB(70, 85, 105)).SingleLine()
+		}
+		ui.Divider(c)
+		if ui.Button(c, "关闭").Clicked() {
+			app.showHelp = false
+		}
 	})
 }
 
 func main() {
 	app := &ViewerApp{
 		mode:        ModeBoth,
+		colorMode:   ColorPerInstance,
 		modeStr:     "填充加轮廓",
-		opacity:     0.5,
+		opacity:     1.0,
 		zoomScale:   1.0,
 		colorSeed:   0,
 		strokeWidth: 1,
@@ -975,6 +1153,7 @@ func main() {
 			Content:   ui.View(app.view),
 		})
 		_ = app.win.SetIcon(appIconPNG)
+	app.watchDPI()
 		app.win.Center()
 
 		app.setupTray()

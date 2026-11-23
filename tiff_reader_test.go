@@ -68,6 +68,24 @@ func TestReadMultiPageCropTIFF(t *testing.T) {
 	}
 }
 
+func TestReadMultiPageTIFFWithShape(t *testing.T) {
+	// 新格式：多页 TIFF 每页 metadata 含 shape 字段（单元裁剪尺寸），查看器应正常读取。
+	path := `C:\算法\AIsoftware2\tests_images\common_organoid\result\C2_01_06_05_multimasks.tif`
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("multi-page TIFF with shape sample not found, skipping integration test")
+	}
+	m, err := ReadTIFFMask(path)
+	if err != nil {
+		t.Fatalf("ReadTIFFMask failed: %v", err)
+	}
+	if m.Width != 3107 || m.Height != 2197 {
+		t.Fatalf("unexpected dimensions: %dx%d", m.Width, m.Height)
+	}
+	if m.TotalCells != 40 {
+		t.Fatalf("unexpected cell count: %d", m.TotalCells)
+	}
+}
+
 func TestReadCorruptOrNonTIFFReturnsError(t *testing.T) {
 	// Test nonexistent file
 	_, err := ReadTIFFMask("nonexistent_file.tif")
